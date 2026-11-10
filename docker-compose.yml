@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  inference:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/smahud/llm-inference-runtime:latest
+    container_name: llm-inference-runtime
+    runtime: nvidia
+    environment:
+      - MODEL=meta-llama/Meta-Llama-3-70B-Instruct
+      - TENSOR_PARALLEL_SIZE=1
+      - PIPELINE_PARALLEL_SIZE=1
+      - MAX_BATCH_SIZE=256
+      - MAX_SEQ_LEN=4096
+      - MAX_NUM_SEQS=256
+      - GPU_MEMORY_UTILIZATION=0.9
+      - SWAP_SPACE=4
+      - DTYPE=auto
+      - QUANTIZATION=none
+      - TRUST_REMOTE_CODE=false
+      - ENABLE_CHUNKED_PREFILL=true
+      - ENABLE_PREFIX_CACHING=true
+      - PORT=8000
+      - WORKERS=1
+      - LOG_LEVEL=info
+      - METRICS_ENABLED=true
+      - API_KEYS=${API_KEYS:-}
+      - RATE_LIMIT_RPM=1000
+      - RATE_LIMIT_TPM=100000
+      - REDIS_URL=redis://redis:6379
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/root/.cache/huggingface
+    ports:
+      - "8000:8000"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+      - ./config:/app/config:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: llm-inference-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: llm-inference-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: llm-inference-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./k8s/grafana-dashboard.json:/var/lib/grafana/dashboards/llm-inference.json:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
+  redis-data:
+  prometheus-data:
+  grafana-data:

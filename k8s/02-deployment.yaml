@@ -1,0 +1,164 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-inference-runtime
+  namespace: llm-inference
+  labels:
+    app: llm-inference-runtime
+    version: v1.0.0
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: llm-inference-runtime
+  template:
+    metadata:
+      labels:
+        app: llm-inference-runtime
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: llm-inference-sa
+      priorityClassName: high-priority
+      nodeSelector:
+        accelerator: nvidia-gpu
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: inference
+          image: ghcr.io/smahud/llm-inference-runtime:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: MODEL
+              value: "meta-llama/Meta-Llama-3-70B-Instruct"
+            - name: TENSOR_PARALLEL_SIZE
+              value: "4"
+            - name: PIPELINE_PARALLEL_SIZE
+              value: "1"
+            - name: MAX_BATCH_SIZE
+              value: "256"
+            - name: MAX_SEQ_LEN
+              value: "8192"
+            - name: MAX_NUM_SEQS
+              value: "256"
+            - name: GPU_MEMORY_UTILIZATION
+              value: "0.9"
+            - name: SWAP_SPACE
+              value: "4"
+            - name: DTYPE
+              value: "auto"
+            - name: QUANTIZATION
+              value: "none"
+            - name: TRUST_REMOTE_CODE
+              value: "false"
+            - name: ENABLE_CHUNKED_PREFILL
+              value: "true"
+            - name: ENABLE_PREFIX_CACHING
+              value: "true"
+            - name: PORT
+              value: "8000"
+            - name: WORKERS
+              value: "1"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: METRICS_ENABLED
+              value: "true"
+            - name: API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: llm-inference-secrets
+                  key: api-keys
+                  optional: true
+            - name: RATE_LIMIT_RPM
+              value: "1000"
+            - name: RATE_LIMIT_TPM
+              value: "100000"
+            - name: REDIS_URL
+              value: "redis://llm-inference-redis:6379"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: llm-inference-secrets
+                  key: hf-token
+                  optional: true
+            - name: HF_HOME
+              value: "/root/.cache/huggingface"
+          resources:
+            limits:
+              nvidia.com/gpu: 4
+              memory: "90Gi"
+              cpu: "32"
+            requests:
+              nvidia.com/gpu: 4
+              memory: "80Gi"
+              cpu: "16"
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 30
+      volumes:
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: hf-cache-pvc
+        - name: config
+          configMap:
+            name: llm-inference-config
+      initContainers:
+        - name: model-downloader
+          image: ghcr.io/smahud/llm-inference-runtime:latest
+          command: ["python", "-m", "scripts.model_downloader"]
+          env:
+            - name: MODEL
+              value: "meta-llama/Meta-Llama-3-70B-Instruct"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: llm-inference-secrets
+                  key: hf-token
+                  optional: true
+            - name: HF_HOME
+              value: "/root/.cache/huggingface"
+          resources:
+            limits:
+              memory: "4Gi"
+              cpu: "2"
+            requests:
+              memory: "2Gi"
+              cpu: "1"
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface

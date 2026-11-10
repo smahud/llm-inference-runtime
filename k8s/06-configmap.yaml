@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-inference-config
+  namespace: llm-inference
+data:
+  logging.yaml: |
+    version: 1
+    disable_existing_loggers: false
+    formatters:
+      json:
+        format: "%(asctime)s %(name)s %(levelname)s %(message)s"
+        class: pythonjsonlogger.jsonlogger.JsonFormatter
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: json
+        stream: ext://sys.stdout
+    root:
+      level: INFO
+      handlers: [console]
